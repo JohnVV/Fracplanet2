@@ -47,16 +47,20 @@
 #include <QTabWidget>
 #include <QTextBrowser>
 #include <QTextEdit>
-#include <QTime>
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <QElapsedTimer>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
+#include <QOpenGLWidget>
+#include <QSurfaceFormat>
+
+// Raw OpenGL — pulled in via Qt's wrapper
+#include <QOpenGLExtraFunctions>
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
-#include <GL/glext.h>
-
-#include <QtOpenGL/qgl.h>
 
 #endif

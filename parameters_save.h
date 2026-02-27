@@ -39,22 +39,13 @@ class ParametersSave
   //! Destructor.
   ~ParametersSave();
 
-  //! Whether to emit an atmosphere object to POV file.
-  bool pov_atmosphere;
-
-  //! Whether to emit a single sea-level object to POV file.
-  bool pov_sea_object;
-
-  //! Whether to try using per-vertex-alpha in the blender output.
-  bool blender_per_vertex_alpha;
-
   //! Whether textures should include shading.
   bool texture_shaded;
   
   //! Size of texture for texture save (is height; width is implicit).
   uint texture_height;
 
-  //! Save for blender needs access to some of these.
+  //! Texture save needs access to some of these.
   const ParametersRender*const parameters_render;
 };
 

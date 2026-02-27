@@ -166,13 +166,24 @@ template <typename T> class Raster
       return boost::iterator_range<const T*>(it,it+_width);
     }
 
-  class RowIterator : public std::iterator<std::forward_iterator_tag, boost::iterator_range<T*> >
+  class RowIterator
     {
     public:
+
+      using iterator_category = std::forward_iterator_tag;
+      using value_type        = boost::iterator_range<T*>;
+      using difference_type   = std::ptrdiff_t;
+      using pointer           = boost::iterator_range<T*>*;
+      using reference         = boost::iterator_range<T*>&;
 
       RowIterator(const boost::iterator_range<T*>& row, uint p)
 	:_row(row)
 	,_pitch(p)
+	{}
+
+      RowIterator(const RowIterator& it)
+	:_row(it._row)
+	,_pitch(it._pitch)
 	{}
 
       ~RowIterator()
@@ -243,13 +254,24 @@ template <typename T> class Raster
       return _row_end;
     }
   
-  class ConstRowIterator : public std::iterator<std::forward_iterator_tag, boost::iterator_range<const T*> >
+  class ConstRowIterator
     {
     public:
+
+      using iterator_category = std::forward_iterator_tag;
+      using value_type        = boost::iterator_range<const T*>;
+      using difference_type   = std::ptrdiff_t;
+      using pointer           = boost::iterator_range<const T*>*;
+      using reference         = boost::iterator_range<const T*>&;
 
       ConstRowIterator(const boost::iterator_range<const T*>& row, uint p)
 	:_row(row)
 	,_pitch(p)
+	{}
+
+      ConstRowIterator(const ConstRowIterator& it)
+	:_row(it._row)
+	,_pitch(it._pitch)
 	{}
 
       ~ConstRowIterator()

@@ -38,8 +38,10 @@
 #include "triangle_mesh_terrain.h"
 #include "triangle_mesh_viewer.h"
 
+#include <QMainWindow>
+
 //! Top level GUI component for fracplanet application: contains parameter controls and viewing area
-class FracplanetMain : public QWidget,public Progress
+class FracplanetMain : public QMainWindow,public Progress
 {
  private:
 
@@ -47,7 +49,7 @@ class FracplanetMain : public QWidget,public Progress
 
  public:
  
-  FracplanetMain(QWidget* parent,QApplication* app,const boost::program_options::variables_map& opts,bool verbose);
+  FracplanetMain(QApplication* app,const boost::program_options::variables_map& opts,bool verbose);
   ~FracplanetMain();
 
   virtual void progress_start(uint target,const std::string&);
@@ -60,12 +62,6 @@ class FracplanetMain : public QWidget,public Progress
   //! Invoked by ControlTerrain to generate new TriangleMesh.
   void regenerate();
   
-  //! Invoked by ControlSave to save to file (POV-Ray format).
-  void save_pov();
-
-  //! Invoked by ControlSave to save to file (Blender format).
-  void save_blender();
-
   //! Invoked by ControlSave to save to file as texture(s).
   void save_texture();
 
@@ -95,7 +91,7 @@ class FracplanetMain : public QWidget,public Progress
   ControlSave* control_save;
   ControlAbout* control_about;
 
-  boost::scoped_ptr<TriangleMeshViewer> viewer;
+  std::unique_ptr<TriangleMeshViewer> viewer;
 
   QTabWidget* tab;
 

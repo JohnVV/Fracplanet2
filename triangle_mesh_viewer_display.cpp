@@ -18,33 +18,117 @@
 /**************************************************************************/
 
 #include "triangle_mesh_viewer_display.h"
-
-#include "matrix33.h"
 #include "triangle_mesh_viewer.h"
+#include "matrix33.h"
 
-#include <GL/glu.h>
+#include <QMatrix4x4>
+#include <QVector3D>
 
-TriangleMeshViewerDisplay::TriangleMeshViewerDisplay(TriangleMeshViewer* parent,const QGLFormat& format,const ParametersRender* param,const std::vector<const TriangleMesh*>& m,bool verbose)
-  :QGLWidget(format,parent)
-  ,_notify(*parent)
-  ,_verbose(verbose)
-  ,mesh(m)
-  ,parameters(param)
-  ,gl_display_list_index(0)
-  ,frame_number(0)
-  ,width(0)
-  ,height(0)
-  ,frame_time()
-  ,camera_position(3.0f,0.0f,0.0f)
-  ,camera_lookat(0.0f,0.0f,0.0f)
-  ,camera_up(0.0f,0.0f,1.0f)
-  ,object_tilt(30.0f*M_PI/180.0f)
-  ,object_rotation(0.0f)
+// ---------------------------------------------------------------------------
+// GLSL 1.50 shaders (OpenGL 3.2 core)
+// ---------------------------------------------------------------------------
+
+static const char* VERT_SRC = R"glsl(
+#version 150 core
+
+// Object-space transform (tilt + spin)
+uniform mat4  u_model;
+// Camera (view) transform
+uniform mat4  u_view;
+// Projection transform
+uniform mat4  u_proj;
+// Normal matrix = mat3(transpose(inverse(u_model)))
+// For the pure-rotation object transforms used here this equals mat3(u_model).
+uniform mat3  u_normal_mat;
+
+// Lighting (all in world space)
+uniform vec3  u_light_dir;   // unit vector toward the light source
+uniform float u_ambient;     // ambient intensity [0,1]
+
+// Per-draw
+uniform float u_emissive;    // mesh emissive factor (0 = non-emissive terrain)
+uniform int   u_colour_set;  // 0 or 1 — which colour attribute to use
+
+// Per-vertex
+in vec3 a_position;
+in vec3 a_normal;
+in vec4 a_colour0;    // GL_UNSIGNED_BYTE, normalized to [0,1]
+in vec4 a_colour1;
+
+out vec4 v_colour;
+
+void main()
 {
-  assert(isValid());
-  
-  setSizePolicy(QSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding));
+    // Transform position through model then view then projection
+    vec4 world_pos = u_model * vec4(a_position, 1.0);
+    gl_Position    = u_proj * u_view * world_pos;
 
+    // Transform normal to world space (object has uniform scale, so no
+    // need for full inverse-transpose beyond rotating).
+    vec3 n = normalize(u_normal_mat * a_normal);
+
+    // Diffuse Lambertian term
+    float ndotl = max(dot(n, u_light_dir), 0.0);
+
+    // Choose colour set
+    vec4 raw = (u_colour_set == 0) ? a_colour0 : a_colour1;
+    vec3 col = raw.rgb;
+    float alpha = raw.a;
+
+    vec3 lit;
+    float out_alpha;
+
+    if (u_emissive > 0.0 && alpha < (0.5 / 255.0)) {
+        // alpha == 0 (byte) signals an emissive vertex.
+        // Emissive and transparent are mutually exclusive in this codebase.
+        float ad = 1.0 - u_emissive;
+        float em = u_emissive;
+        lit       = col * (u_ambient * ad + ndotl * (1.0 - u_ambient) * ad + em);
+        out_alpha = 1.0;
+    } else {
+        // Standard diffuse-only lighting
+        lit       = col * (u_ambient + ndotl * (1.0 - u_ambient));
+        out_alpha = alpha;
+    }
+
+    v_colour = vec4(lit, out_alpha);
+}
+)glsl";
+
+static const char* FRAG_SRC = R"glsl(
+#version 150 core
+
+in  vec4 v_colour;
+out vec4 frag_colour;
+
+void main()
+{
+    frag_colour = v_colour;
+}
+)glsl";
+
+// ---------------------------------------------------------------------------
+
+TriangleMeshViewerDisplay::TriangleMeshViewerDisplay(
+    TriangleMeshViewer* parent,
+    const ParametersRender* param,
+    const std::vector<const TriangleMesh*>& m,
+    bool verbose)
+  : QOpenGLWidget(parent)
+  , _notify(*parent)
+  , _verbose(verbose)
+  , mesh(m)
+  , parameters(param)
+  , frame_number(0)
+  , _width(0)
+  , _height(0)
+  , camera_position(3.0f, 0.0f, 0.0f)
+  , camera_lookat(0.0f, 0.0f, 0.0f)
+  , camera_up(0.0f, 0.0f, 1.0f)
+  , object_tilt(30.0f * static_cast<float>(M_PI) / 180.0f)
+  , object_rotation(0.0f)
+{
+  setSizePolicy(QSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding));
   frame_time.start();
   frame_time_reported.start();
 }
@@ -52,422 +136,364 @@ TriangleMeshViewerDisplay::TriangleMeshViewerDisplay(TriangleMeshViewer* parent,
 TriangleMeshViewerDisplay::~TriangleMeshViewerDisplay()
 {
   makeCurrent();
-  if (gl_display_list_index)
-    glDeleteLists(gl_display_list_index,1);
+  destroy_gpu_buffers();
+  doneCurrent();
 }
 
-QSize TriangleMeshViewerDisplay::minimumSizeHint() const
+QSize TriangleMeshViewerDisplay::minimumSizeHint() const { return QSize(64, 64); }
+QSize TriangleMeshViewerDisplay::sizeHint()        const { return QSize(512, 512); }
+
+// ---------------------------------------------------------------------------
+// GPU buffer management
+// ---------------------------------------------------------------------------
+
+void TriangleMeshViewerDisplay::destroy_gpu_buffers()
 {
-  return QSize(64,64);
+  mesh_gpu.clear();
 }
 
-QSize TriangleMeshViewerDisplay::sizeHint() const
+void TriangleMeshViewerDisplay::build_gpu_buffers()
 {
-  return QSize(512,512);
+  destroy_gpu_buffers();
+
+  for (uint m = 0; m < mesh.size(); ++m)
+    {
+      const TriangleMesh* it = mesh[m];
+      if (!it || it->vertices() == 0 || it->triangles() == 0) {
+        mesh_gpu.push_back(nullptr);
+        continue;
+      }
+
+      auto gpu = std::make_unique<MeshGPU>();
+      gpu->triangles_colour0 = it->triangles_of_colour0();
+      gpu->triangles_total   = it->triangles();
+      gpu->emissive          = it->emissive();
+
+      gpu->vao.create();
+      gpu->vao.bind();
+
+      // --- Vertex buffer ---
+      // The Vertex struct is exactly 32 bytes:
+      //   offset  0: float[3] position
+      //   offset 12: float[3] normal
+      //   offset 24: uint8[4] colour[0]
+      //   offset 28: uint8[4] colour[1]
+      gpu->vbo.create();
+      gpu->vbo.bind();
+      gpu->vbo.allocate(&it->vertex(0),
+                        static_cast<int>(it->vertices() * sizeof(Vertex)));
+
+      const int stride = static_cast<int>(sizeof(Vertex));
+
+      // a_position  (location 0)
+      glEnableVertexAttribArray(0);
+      glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
+                            reinterpret_cast<void*>(0));
+      // a_normal    (location 1)
+      glEnableVertexAttribArray(1);
+      glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
+                            reinterpret_cast<void*>(12));
+      // a_colour0   (location 2)  — normalized unsigned bytes
+      glEnableVertexAttribArray(2);
+      glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride,
+                            reinterpret_cast<void*>(24));
+      // a_colour1   (location 3)
+      glEnableVertexAttribArray(3);
+      glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride,
+                            reinterpret_cast<void*>(28));
+
+      // --- Index buffer ---
+      // Triangle._vertex[3] is a uint[3] array — safe to upload directly.
+      gpu->ibo.create();
+      gpu->ibo.bind();
+      gpu->ibo.allocate(&it->triangle(0).vertex(0),
+                        static_cast<int>(it->triangles() * 3 * sizeof(uint)));
+
+      gpu->vao.release();
+      gpu->vbo.release();
+      gpu->ibo.release();
+
+      if (_verbose)
+        std::cerr << "Built GPU buffers for mesh " << m
+                  << ": " << it->vertices() << " verts, "
+                  << it->triangles() << " tris\n";
+
+      mesh_gpu.push_back(std::move(gpu));
+    }
 }
 
 void TriangleMeshViewerDisplay::set_mesh(const std::vector<const TriangleMesh*>& m)
 {
-  mesh=m;
-
-  // If there is a display list allocated for the previous mesh, delete it.
-  if (gl_display_list_index!=0)
-    {
-      glDeleteLists(gl_display_list_index,1);
-      gl_display_list_index=0;
-    }  
+  mesh = m;
+  if (isValid()) {
+    makeCurrent();
+    build_gpu_buffers();
+    doneCurrent();
+  }
+  // If GL isn't initialised yet, build_gpu_buffers() is called from initializeGL().
 }
 
-const FloatRGBA TriangleMeshViewerDisplay::background_colour() const
+// ---------------------------------------------------------------------------
+// Background colour
+// ---------------------------------------------------------------------------
+
+FloatRGBA TriangleMeshViewerDisplay::background_colour() const
 {
-  if (mesh.empty()) return FloatRGBA(0.0f,0.0f,0.0f,1.0f);
+  if (mesh.empty()) return FloatRGBA(0.0f, 0.0f, 0.0f, 1.0f);
 
-  const XYZ relative_camera_position 
-    =Matrix33RotateAboutZ(-object_rotation)*Matrix33RotateAboutX(-object_tilt)*camera_position;
+  const XYZ rel =
+    Matrix33RotateAboutZ(-object_rotation) *
+    Matrix33RotateAboutX(-object_tilt)     *
+    camera_position;
 
-  const float h = mesh[0]->geometry().height(relative_camera_position);
-  if (h<=0.0f) return parameters->background_colour_low;
-  else if (h>=1.0f) return parameters->background_colour_high;
-  else return parameters->background_colour_low+h*(parameters->background_colour_high-parameters->background_colour_low);
+  const float h = mesh[0]->geometry().height(rel);
+  if (h <= 0.0f) return parameters->background_colour_low;
+  if (h >= 1.0f) return parameters->background_colour_high;
+  return parameters->background_colour_low
+       + h * (parameters->background_colour_high - parameters->background_colour_low);
 }
 
-void TriangleMeshViewerDisplay::check_for_gl_errors(const char* where) const
+// ---------------------------------------------------------------------------
+// GL error check
+// ---------------------------------------------------------------------------
+
+void TriangleMeshViewerDisplay::check_for_gl_errors(const char* where)
 {
   GLenum error;
-  while ((error=glGetError())!=GL_NO_ERROR)
-    {
-      std::ostringstream msg;
-      msg << "GL error in " << where << " (frame " << frame_number << ") : ";
-      switch (error)
-	{
-	case GL_INVALID_ENUM:
-	  msg << "GL_INVALID_ENUM";
-	  break;
-	case GL_INVALID_VALUE:
-	  msg << "GL_INVALID_VALUE";
-	  break;
-	case GL_INVALID_OPERATION:
-	  msg << "GL_INVALID_OPERATION";
-	  break;
-	case GL_STACK_OVERFLOW:
-	  msg << "GL_STACK_OVERFLOW";
-	  break;
-	case GL_STACK_UNDERFLOW:
-	  msg << "GL_STACK_UNDERFLOW";
-	  break;
-	case GL_OUT_OF_MEMORY:
-	  msg << "GL_OUT_OF_MEMORY";
-	  break;
-	}
-      std::cerr << msg.str() << std::endl;
+  while ((error = glGetError()) != GL_NO_ERROR) {
+    std::ostringstream msg;
+    msg << "GL error in " << where << " (frame " << frame_number << "): ";
+    switch (error) {
+      case GL_INVALID_ENUM:      msg << "GL_INVALID_ENUM";      break;
+      case GL_INVALID_VALUE:     msg << "GL_INVALID_VALUE";     break;
+      case GL_INVALID_OPERATION: msg << "GL_INVALID_OPERATION"; break;
+      case GL_OUT_OF_MEMORY:     msg << "GL_OUT_OF_MEMORY";     break;
+      default:                   msg << "0x" << std::hex << error; break;
     }
+    std::cerr << msg.str() << std::endl;
+  }
 }
+
+// ---------------------------------------------------------------------------
+// initializeGL
+// ---------------------------------------------------------------------------
+
+void TriangleMeshViewerDisplay::initializeGL()
+{
+  initializeOpenGLFunctions();
+
+  if (_verbose) {
+    std::cerr << "OpenGL version : "
+              << reinterpret_cast<const char*>(glGetString(GL_VERSION)) << "\n";
+    std::cerr << "GLSL version   : "
+              << reinterpret_cast<const char*>(glGetString(GL_SHADING_LANGUAGE_VERSION)) << "\n";
+    std::cerr << "Multisampling  : "
+              << (format().samples() > 1 ? "ON" : "OFF") << "\n";
+  }
+
+  // Compile and link shaders
+  if (!shader.addShaderFromSourceCode(QOpenGLShader::Vertex, VERT_SRC))
+    std::cerr << "Vertex shader error:\n" << shader.log().toStdString() << "\n";
+
+  if (!shader.addShaderFromSourceCode(QOpenGLShader::Fragment, FRAG_SRC))
+    std::cerr << "Fragment shader error:\n" << shader.log().toStdString() << "\n";
+
+  // Bind attribute locations before linking
+  shader.bindAttributeLocation("a_position", 0);
+  shader.bindAttributeLocation("a_normal",   1);
+  shader.bindAttributeLocation("a_colour0",  2);
+  shader.bindAttributeLocation("a_colour1",  3);
+
+  if (!shader.link())
+    std::cerr << "Shader link error:\n" << shader.log().toStdString() << "\n";
+
+  // Fixed GL state
+  glEnable(GL_DEPTH_TEST);
+  glEnable(GL_CULL_FACE);
+  glCullFace(GL_BACK);
+  glFrontFace(GL_CCW);
+
+  // If meshes were set before the GL context existed, build buffers now.
+  if (!mesh.empty())
+    build_gpu_buffers();
+
+  if (_verbose)
+    check_for_gl_errors(__PRETTY_FUNCTION__);
+}
+
+// ---------------------------------------------------------------------------
+// resizeGL
+// ---------------------------------------------------------------------------
+
+void TriangleMeshViewerDisplay::resizeGL(int w, int h)
+{
+  _width  = static_cast<uint>(w);
+  _height = static_cast<uint>(h);
+
+  if (_verbose)
+    std::cerr << "QOpenGLWidget resized to " << _width << "x" << _height << "\n";
+
+  glViewport(0, 0, w, h);
+}
+
+// ---------------------------------------------------------------------------
+// paintGL
+// ---------------------------------------------------------------------------
 
 void TriangleMeshViewerDisplay::paintGL()
 {
-  assert(isValid());
-
-  const FloatRGBA bg=background_colour();
-  glClearColor(bg.r,bg.g,bg.b,1.0f);
+  const FloatRGBA bg = background_colour();
+  glClearColor(bg.r, bg.g, bg.b, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-  const float a=parameters->ambient;
+  if (mesh_gpu.empty()) return;
 
-  GLfloat global_ambient[]={a,a,a,1.0};
-  glLightModelfv(GL_LIGHT_MODEL_AMBIENT,global_ambient);
+  // --- Build matrices ---
 
-  GLfloat light_diffuse[]={1.0f-a,1.0f-a,1.0f-a,1.0};
-  glLightfv(GL_LIGHT0,GL_DIFFUSE,light_diffuse);
+  // Object transform: tilt (X) then spin (Z)
+  QMatrix4x4 model;
+  model.rotate(static_cast<float>(180.0 / M_PI) * object_tilt,     1, 0, 0);
+  model.rotate(static_cast<float>(180.0 / M_PI) * object_rotation, 0, 0, 1);
 
-  glMatrixMode(GL_MODELVIEW);
-  glLoadIdentity();
+  // Camera / view transform
+  QMatrix4x4 view;
+  view.lookAt(
+    QVector3D(camera_position.x, camera_position.y, camera_position.z),
+    QVector3D(camera_lookat.x,   camera_lookat.y,   camera_lookat.z),
+    QVector3D(camera_up.x,       camera_up.y,       camera_up.z));
 
-  gluLookAt(
-	    camera_position.x,camera_position.y,camera_position.z,
-	    camera_lookat.x  ,camera_lookat.y  ,camera_lookat.z,
-	    camera_up.x      ,camera_up.y      ,camera_up.z
-	    );
+  // Perspective projection
+  const float view_angle =
+    static_cast<float>(minimum(90.0,
+      _width > _height ? 45.0 : 45.0 * _height / _width));
 
-  const XYZ light_direction(parameters->illumination_direction());
-  GLfloat light_position[]=
+  QMatrix4x4 proj;
+  proj.perspective(view_angle,
+                   static_cast<float>(_width) / static_cast<float>(_height),
+                   0.01f, 10.0f);
+
+  // Normal matrix: for pure rotations, inverse-transpose == the rotation itself
+  QMatrix3x3 normal_mat = model.normalMatrix();
+
+  // Light direction in world space
+  const XYZ ld = parameters->illumination_direction();
+  QVector3D light_dir(ld.x, ld.y, ld.z);
+  light_dir.normalize();
+
+  // --- Render each mesh ---
+
+  shader.bind();
+  shader.setUniformValue("u_model",      model);
+  shader.setUniformValue("u_view",       view);
+  shader.setUniformValue("u_proj",       proj);
+  shader.setUniformValue("u_normal_mat", normal_mat);
+  shader.setUniformValue("u_light_dir",  light_dir);
+  shader.setUniformValue("u_ambient",    parameters->ambient);
+
+  for (uint m = 0; m < mesh_gpu.size(); ++m)
     {
-      light_direction.x,
-      light_direction.y,
-      light_direction.z,
-      0.0f     // w=0 implies directional light
-    };
+      MeshGPU* gpu = mesh_gpu[m].get();
+      if (!gpu) continue;
 
-  glLightfv(GL_LIGHT0,GL_POSITION,light_position);
+      shader.setUniformValue("u_emissive", gpu->emissive);
 
-  glRotatef((180.0/M_PI)*object_tilt,1.0,0.0,0.0);
-  glRotatef((180.0/M_PI)*object_rotation,0.0,0.0,1.0);
+      // Meshes after the first (clouds) are rendered with both face windings
+      // so they look correct from above and below.
+      const uint passes = (m == 0) ? 1u : 2u;
 
-  glPolygonMode(GL_FRONT_AND_BACK,(parameters->wireframe ? GL_LINE : GL_FILL));
+      if (gpu->emissive == 0.0f && m > 0) {
+        // Non-emissive secondary mesh (unused in current codebase, but handle it)
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+      } else if (m > 0) {
+        // Emissive secondary mesh (clouds): no blending — alpha used for emission
+        glDisable(GL_BLEND);
+      } else {
+        glDisable(GL_BLEND);
+      }
 
-  glEnable(GL_CULL_FACE);
-  glFrontFace(GL_CCW);
-  
-  if (parameters->display_list && gl_display_list_index!=0)
-    {
-      glCallList(gl_display_list_index);
+      gpu->vao.bind();
+
+      for (uint pass = 0; pass < passes; ++pass)
+        {
+          glCullFace(passes == 2 && pass == 0 ? GL_FRONT : GL_BACK);
+
+          // Draw colour-0 triangles
+          if (gpu->triangles_colour0 > 0) {
+            shader.setUniformValue("u_colour_set", 0);
+            glDrawElements(GL_TRIANGLES,
+                           static_cast<GLsizei>(gpu->triangles_colour0 * 3),
+                           GL_UNSIGNED_INT,
+                           reinterpret_cast<void*>(0));
+          }
+
+          // Draw colour-1 triangles (offset into IBO by colour0 triangles)
+          const uint colour1_count = gpu->triangles_total - gpu->triangles_colour0;
+          if (colour1_count > 0) {
+            shader.setUniformValue("u_colour_set", 1);
+            glDrawElements(
+              GL_TRIANGLES,
+              static_cast<GLsizei>(colour1_count * 3),
+              GL_UNSIGNED_INT,
+              reinterpret_cast<void*>(gpu->triangles_colour0 * 3 * sizeof(uint)));
+          }
+        }
+
+      gpu->vao.release();
     }
-  else
-    {
-      bool building_display_list=(parameters->display_list && gl_display_list_index==0);
 
-      if (building_display_list)
-	{
-	  gl_display_list_index=glGenLists(1);
-	  assert(gl_display_list_index!=0);
-	  glNewList(gl_display_list_index,GL_COMPILE_AND_EXECUTE);
-	  if (_verbose) std::cerr << "Building display list...";
-	}
-
-      GLfloat default_material_white[3]={1.0f,1.0f,1.0f};
-      GLfloat default_material_black[3]={0.0f,0.0f,0.0f};
-      glMaterialfv(GL_FRONT_AND_BACK,GL_AMBIENT_AND_DIFFUSE,default_material_white);
-      glMaterialfv(GL_FRONT_AND_BACK,GL_EMISSION,default_material_black);
-
-      for (uint m=0;m<mesh.size();m++)
-	{
-	  const TriangleMesh*const it=mesh[m];
-	  if (it==0) continue;
-
-	  // Meshes after the first are rendered twice: first the backfacing polys then the front facing.
-	  // This solves the problem of either clouds disappearing when we're under them (with backface culling)
-	  // or weird stuff around the periphery when culling is on.
-	  // It's quite an expensive solution!  
-	  const uint passes=(m==0 ? 1 : 2);
-	  for (uint pass=0;pass<passes;pass++)
-	    {
-	      if (passes==2 && pass==0)
-		{
-		  glCullFace(GL_FRONT);
-		}
-	      else
-		{
-		  glCullFace(GL_BACK);
-		}
-
-	      if (it->emissive()==0.0f)
-		{
-		  if (m) // Switch blending on for non-emissive meshes after the first
-		    {
-		      glEnable(GL_BLEND);
-		      glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
-		    }
-		  else
-		    {
-		      glDisable(GL_BLEND);
-		    }
-		  
-		  // Use "Color Material" mode 'cos everything is the same material.... just change the colour
-		  glEnable(GL_COLOR_MATERIAL);
-		  glColorMaterial(GL_FRONT_AND_BACK,GL_AMBIENT_AND_DIFFUSE);
-		  
-		  // Point GL at arrays of data
-		  glVertexPointer(3,GL_FLOAT,sizeof(Vertex),&(it->vertex(0).position().x));
-		  glNormalPointer(GL_FLOAT,sizeof(Vertex),&(it->vertex(0).normal().x));
-		  
-		  // For a second mesh, use alpha (actually could use it for the first mesh but maybe it's more efficient not to).
-		  glColorPointer((m==0 ? 3 : 4),GL_UNSIGNED_BYTE,sizeof(Vertex),&(it->vertex(0).colour(0).r));
-
-		  // Builds on some platforms (ie Ubuntu) seem to get in a mess if you render >1k primitives
-		  // (3k vertices).  NB This is a problem in the client; not the xserver.
-		  // Debian (Sarge or Etch) has no problems with unlimited batches.
-		  // Note it's simply the batch size; there doesn't seem to be any problem with the 10Ks of vertices.
-		  // Since the limited batch size doesn't seem to hurt working implementations we just use it everywhere.
-		  const uint batch_size=1000;
-
-		  // Draw the colour-zero triangles
-		  for (uint t=0;t<it->triangles_of_colour0();t+=batch_size)
-		    {
-		      glDrawRangeElements
-			(
-			 GL_TRIANGLES,
-			 0,
-			 it->vertices()-1,
-			 3*std::min(batch_size,static_cast<uint>(it->triangles_of_colour0()-t)),
-			 GL_UNSIGNED_INT,
-			 &(it->triangle(t).vertex(0))
-			 );
-		      if (_verbose && building_display_list)
-			{
-			  std::cerr << ".";
-			}
-		    }
-		  
-		  // Switch to alternate colour and draw the colour-one triangles
-		  glColorPointer(3,GL_UNSIGNED_BYTE,sizeof(Vertex),&(it->vertex(0).colour(1).r));
-
-		  for (uint t=it->triangles_of_colour0();t<it->triangles();t+=batch_size)
-		    {
-		      glDrawRangeElements
-			(
-			 GL_TRIANGLES,
-			 0,
-			 it->vertices()-1,
-			 3*std::min(batch_size,static_cast<uint>(it->triangles()-t)),
-			 GL_UNSIGNED_INT,
-			 &(it->triangle(t).vertex(0))
-			 );
-		      if (_verbose && building_display_list)
-			{
-			  std::cerr << ".";
-			}
-		    }
-		  
-		  glDisable(GL_COLOR_MATERIAL);
-		}
-	      else // implies mesh[m]->emissive()>0.0
-		{
-		  // We abuse alpha for emission, so no blending
-		  glDisable(GL_BLEND);
-		  
-		  // If there could be emissive vertices, we need to do things the hard way
-		  // using immediate mode.  Maybe the display list capture will help.
-		  
-		  const float k=1.0f/255.0f;
-		  const float em=k*(     it->emissive());
-		  const float ad=k*(1.0f-it->emissive());
-		  
-		  glBegin(GL_TRIANGLES);
-		  for (unsigned int t=0;t<it->triangles();t++)
-		    {
-		      if (_verbose && building_display_list && (t&0x3ff) == 0)
-			{
-			  std::cerr << ".";
-			}
-
-		      const uint c=(t<it->triangles_of_colour0() ? 0 : 1);		      
-		      for (uint i=0;i<3;i++)
-			{
-			  const uint vn=it->triangle(t).vertex(i);
-			  const Vertex& v=it->vertex(vn);
-			  
-			  GLfloat c_ad[3];
-			  GLfloat c_em[3];
-			  if (v.colour(c).a==0)  // Zero alpha used to imply emissive vertex colour
-			    {
-			      c_ad[0]=v.colour(c).r*ad;
-			      c_ad[1]=v.colour(c).g*ad;
-			      c_ad[2]=v.colour(c).b*ad;
-			      c_em[0]=v.colour(c).r*em;
-			      c_em[1]=v.colour(c).g*em;
-			      c_em[2]=v.colour(c).b*em;
-			    }
-			  else
-			    {
-			      c_ad[0]=v.colour(c).r*k;
-			      c_ad[1]=v.colour(c).g*k;
-			      c_ad[2]=v.colour(c).b*k;
-			      c_em[0]=0.0f;
-			      c_em[1]=0.0f;
-			      c_em[2]=0.0f;
-			    }
-			  
-			  glNormal3fv(&(v.normal().x));
-			  glMaterialfv(GL_FRONT_AND_BACK,GL_AMBIENT_AND_DIFFUSE,c_ad);
-			  glMaterialfv(GL_FRONT_AND_BACK,GL_EMISSION,c_em);
-			  glVertex3fv(&(v.position().x));
-			}
-		    }
-		  glEnd();
-		}
-	    }
-	}
-      
-      if (building_display_list)
-	{
-	  glEndList();
-	  if (_verbose)
-	    {
-	      std::cerr << "\n...built display list\n";
-	    }
-	}
-    }
+  // Restore cull face default
+  glCullFace(GL_BACK);
+  glDisable(GL_BLEND);
+  shader.release();
 
   if (_verbose)
     check_for_gl_errors(__PRETTY_FUNCTION__);
 
-  // Get time taken since last frame
-  const uint dt=frame_time.restart();
+  // --- FPS tracking ---
 
-  // Save it in the queue
-  frame_times.push_back(dt);
+  const qint64 dt = frame_time.restart();
+  frame_times.push_back(static_cast<uint>(dt));
+  while (frame_times.size() > 30) frame_times.pop_front();
 
-  // Keep last 30 frame times
-  while (frame_times.size()>30) frame_times.pop_front();
+  if (frame_time_reported.elapsed() > 500)
+    {
+      const float avg = std::accumulate(frame_times.begin(), frame_times.end(), 0u)
+                        / static_cast<float>(frame_times.size());
+      const float fps = 1000.0f / avg;
 
-  // Only update frame time a couple of times a second to reduce flashing
-  if (frame_time_reported.elapsed()>500)
-    {    
-      //! \todo Frame time calculation is wrong... need -1 correction to number of frames
-      const float average_time=std::accumulate
-	(
-	 frame_times.begin(),
-	 frame_times.end(),
-	 0
-	 )/static_cast<float>(frame_times.size());
-      
-      const float fps=1000.0/average_time;
-      
+      uint n_tris = 0, n_verts = 0;
+      for (uint m = 0; m < mesh.size(); ++m) {
+        if (mesh[m]) {
+          n_tris  += mesh[m]->triangles();
+          n_verts += mesh[m]->vertices();
+        }
+      }
+
       std::ostringstream report;
       report.setf(std::ios::fixed);
       report.precision(1);
-      
-      uint n_triangles=0;
-      uint n_vertices=0;
-      for (uint m=0;m<mesh.size();m++)
-	{
-	  if (mesh[m])
-	    {
-	      n_triangles+=mesh[m]->triangles();
-	      n_vertices+=mesh[m]->vertices();
-	    }
-	}
-      report 
-	<< "Triangles: " 
-	<< n_triangles
-	<< ", "
-	<< "Vertices: " 
-	<< n_vertices 
-	<< ", "
-	<< "FPS: " 
-	<< fps 
-	<< "\n";
-    
+      report << "Triangles: " << n_tris
+             << ", Vertices: " << n_verts
+             << ", FPS: " << fps << "\n";
+
       _notify.notify(report.str());
       frame_time_reported.restart();
     }
 }
 
-void TriangleMeshViewerDisplay::initializeGL()
+// ---------------------------------------------------------------------------
+// draw_frame — called by the animation timer in TriangleMeshViewer
+// ---------------------------------------------------------------------------
+
+void TriangleMeshViewerDisplay::draw_frame(const XYZ& p, const XYZ& l, const XYZ& u,
+                                           float r, float t)
 {
-  if (_verbose)
-    {
-      std::cerr << "Double buffering " << (doubleBuffer() ? "ON" : "OFF") << "\n";
-      std::cerr << "Auto Buffer Swap " << (autoBufferSwap() ? "ON" : "OFF") << "\n";
-      std::cerr << "Multisampling    " << (format().sampleBuffers() ? "ON" : "OFF") << "\n";
-    }
-
-  const FloatRGBA bg=background_colour();
-  glClearColor(bg.r,bg.g,bg.b,1.0f);
-
-  // Switch depth-buffering on
-  glEnable(GL_DEPTH_TEST);
-
-  // Basic lighting stuff (set ambient globally rather than in light)
-  GLfloat black_light[]={0.0,0.0,0.0,1.0};
-  glLightfv(GL_LIGHT0,GL_AMBIENT,black_light);
-  glLightfv(GL_LIGHT0,GL_SPECULAR,black_light);
-  glEnable(GL_LIGHT0);
-  glEnable(GL_LIGHTING);
-
-  // Do smooth shading 'cos colours are specified at vertices
-  glShadeModel(GL_SMOOTH);
-
-  // Use arrays of data
-  glEnableClientState(GL_VERTEX_ARRAY);
-  glEnableClientState(GL_COLOR_ARRAY);
-  glEnableClientState(GL_NORMAL_ARRAY);
-}
-
-void TriangleMeshViewerDisplay::resizeGL(int w,int h)
-{
-  width=w;
-  height=h;
-
-  if (_verbose)
-    std::cerr << "QGLWidget resized to " << width << "x" << height << std::endl;
-
-  glViewport(0,0,static_cast<GLint>(w),static_cast<GLint>(h));
-  glMatrixMode(GL_PROJECTION);
-  glLoadIdentity();
-  
-  // View angle is specified in vertical direction, but we need to exaggerate it if image is taller than wide.
-  const float view_angle_degrees=minimum(90.0,width>height ? 45.0 : 45.0*height/width);
-
-  gluPerspective
-    (
-     view_angle_degrees,
-     static_cast<float>(width)/static_cast<float>(height),
-     0.01,10.0
-     );  // Was 0.1 (too far); 0.001 gives artefacts
-
-  glMatrixMode(GL_MODELVIEW);
-  glLoadIdentity();
-}
-
-void TriangleMeshViewerDisplay::draw_frame(const XYZ& p,const XYZ& l,const XYZ& u,float r,float t)
-{
-  frame_number++;
-
-  camera_position=p;
-  camera_lookat=l;
-  camera_up=u;
-  object_rotation=r;
-  object_tilt=t;
-
-  updateGL();
+  ++frame_number;
+  camera_position = p;
+  camera_lookat   = l;
+  camera_up       = u;
+  object_rotation = r;
+  object_tilt     = t;
+  update();
 }

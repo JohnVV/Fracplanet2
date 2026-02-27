@@ -75,7 +75,7 @@ class TriangleMeshViewer : public QWidget
   TriangleMeshViewerDisplay* display;
 
   //! Real time for computing how much to advance animation
-  boost::scoped_ptr<QTime> clock;
+  boost::scoped_ptr<QElapsedTimer> clock;
 
   //! Record time last tick
   int last_t;
@@ -131,6 +131,9 @@ class TriangleMeshViewer : public QWidget
 
   //! Whether in fly mode
   bool fly_mode;
+
+  //! Last mouse position for delta-based fly-mode steering (Wayland-compatible)
+  QPoint last_mouse_pos;
 
   //! Interested in some key presses
   void keyPressEvent(QKeyEvent* e);

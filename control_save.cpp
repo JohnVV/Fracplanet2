@@ -25,71 +25,17 @@ ControlSave::ControlSave(FracplanetMain* save_target,ParametersSave* param)
   :Control()
   ,parameters(param)
 {
-  QTabWidget*const tabs=new QTabWidget();
-  layout()->addWidget(tabs);
-
-  QWidget*const tab_pov=new QWidget();
-  tabs->addTab(tab_pov,"POV-Ray");
-  tab_pov->setLayout(new QVBoxLayout());
-
-  QCheckBox*const atmosphere_checkbox=new QCheckBox("Add atmosphere");
-  tab_pov->layout()->addWidget(atmosphere_checkbox);
-  atmosphere_checkbox->setChecked(parameters->pov_atmosphere);
-  atmosphere_checkbox->setToolTip("Select to add an atmosphere");
-  connect(
-	  atmosphere_checkbox,SIGNAL(stateChanged(int)),
-	  this,SLOT(setAtmosphere(int))
-	  );
-
-  QCheckBox*const sea_object_checkbox=new QCheckBox("Sea as single object");
-  tab_pov->layout()->addWidget(sea_object_checkbox);
-  sea_object_checkbox->setChecked(parameters->pov_sea_object);  
-  sea_object_checkbox->setToolTip("Select to emit a single object (instead of multiple triangles) for the sea surface");
-  connect(
-	  sea_object_checkbox,SIGNAL(stateChanged(int)),
-	  this,SLOT(setSeaSphere(int))
-	  );
-
-  QPushButton*const save_pov=new QPushButton("Save for POV-Ray");
-  tab_pov->layout()->addWidget(save_pov);
-  save_pov->setToolTip("Press to save object for POV-Ray");
-  connect(
-	  save_pov,SIGNAL(clicked()),
-	  save_target,SLOT(save_pov())
-	  );
-
-  QWidget*const tab_blender=new QWidget();
-  tabs->addTab(tab_blender,"Blender");
-  tab_blender->setLayout(new QVBoxLayout());
-
-  QCheckBox*const per_vertex_alpha=new QCheckBox("Use per-vertex alpha (for clouds)");
-  tab_blender->layout()->addWidget(per_vertex_alpha);
-  per_vertex_alpha->setChecked(parameters->blender_per_vertex_alpha);
-  per_vertex_alpha->setToolTip("Unfortunately Blender seems to ignore alpha components supplied with per-vertex\ncolours so a workround is normally used.\nCheck this box to save as if per-vertex alpha worked.");
-  connect(
-	  per_vertex_alpha,SIGNAL(stateChanged(int)),
-	  this,SLOT(setPerVertexAlpha(int))
-	  );
-
-  QPushButton*const save_blender=new QPushButton("Save for Blender");
-  tab_blender->layout()->addWidget(save_blender);
-  save_blender->setToolTip("Press to save object for Blender");
-  connect(
-	  save_blender,SIGNAL(clicked()),
-	  save_target,SLOT(save_blender())
-	  );
-
   QWidget*const tab_texture=new QWidget();
-  tabs->addTab(tab_texture,"Texture");
   tab_texture->setLayout(new QVBoxLayout());
+  layout()->addWidget(tab_texture);
 
   QCheckBox*const shaded_checkbox=new QCheckBox("Shaded texture");
   tab_texture->layout()->addWidget(shaded_checkbox);
   shaded_checkbox->setChecked(parameters->texture_shaded);
   shaded_checkbox->setToolTip("Check to have the texture include relief shading");
   connect(
-	  shaded_checkbox,SIGNAL(stateChanged(int)),
-	  this,SLOT(setTextureShaded(int))
+	  shaded_checkbox,SIGNAL(checkStateChanged(Qt::CheckState)),
+	  this,SLOT(setTextureShaded(Qt::CheckState))
 	  );
 
   QWidget*const grid_texture=new QWidget();
@@ -121,28 +67,12 @@ ControlSave::ControlSave(FracplanetMain* save_target,ParametersSave* param)
 ControlSave::~ControlSave()
 {}
 
-void ControlSave::setAtmosphere(int v)
+void ControlSave::setTextureShaded(Qt::CheckState v)
 {
-  parameters->pov_atmosphere=(v==2);
-}
-
-void ControlSave::setSeaSphere(int v)
-{
-  parameters->pov_sea_object=(v==2);
-}
-
-void ControlSave::setPerVertexAlpha(int v)
-{
-  parameters->blender_per_vertex_alpha=(v==2);
-}
-
-void ControlSave::setTextureShaded(int v)
-{
-  parameters->texture_shaded=(v==2);
+  parameters->texture_shaded=(v==Qt::Checked);
 }
 
 void ControlSave::setTextureHeight(int v)
 {
   parameters->texture_height=v;
 }
-

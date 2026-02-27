@@ -23,12 +23,13 @@
 
   \section introduction Introduction
   "Fracplanet" is an interactive tool for generating fractal planets and terrains.
-  It can output the generated meshes to files suitable for use by POV-Ray.
 
   \todo For new features to be added, see the TODO file.
  */
 
 #include "fracplanet_main.h"
+
+#include <QSurfaceFormat>
 
 //! Application code
 /*! Currently this simply creates a TriangleMesh object of some sort,
@@ -36,6 +37,19 @@
  */
 int main(int argc,char* argv[])
 {
+  // Must be called before QApplication.
+  // Request OpenGL 3.2 core profile — Wayland/EGL (Mesa) supports this
+  // without the compatibility-profile extension that caused EGL_BAD_MATCH.
+  // The renderer uses only core-profile features (shaders, VAO, VBO).
+  {
+    QSurfaceFormat fmt;
+    fmt.setDepthBufferSize(24);
+    fmt.setSamples(4);
+    fmt.setProfile(QSurfaceFormat::CoreProfile);
+    fmt.setVersion(3, 2);
+    QSurfaceFormat::setDefaultFormat(fmt);
+  }
+
   QApplication app(argc,argv);
 
   boost::program_options::variables_map opts;
@@ -76,7 +90,7 @@ int main(int argc,char* argv[])
   if (verbose)
     std::cerr << "Setting up...\n";
 
-  FracplanetMain*const main_widget=new FracplanetMain(0,&app,opts,verbose);
+  FracplanetMain*const main_widget=new FracplanetMain(&app,opts,verbose);
 
   if (verbose)
     std::cerr << "...setup completed\n";

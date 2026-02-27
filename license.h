@@ -21,7 +21,7 @@
   \brief Header declaring license string.
 */
 
-#ifndef _license_h
+#ifndef _license_h_
 #define _license_h_
 
 #include "common.h"

@@ -43,7 +43,7 @@ void TriangleMeshCloud::write_blender(std::ofstream& out,const ParametersSave& p
     (
      out,
      mesh_name+".cloud",
-     (parameters_save.blender_per_vertex_alpha ? 0 : &parameters_save.parameters_render->background_colour_low)
+     &parameters_save.parameters_render->background_colour_low
      );
 }
 

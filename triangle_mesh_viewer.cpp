@@ -19,11 +19,10 @@
 
 #include "triangle_mesh_viewer.h"
 
-/*! The viewer will be parented on the specified widget, 
-  but with a Qt::Window flag to make it a top-level window
+/*! The viewer is embedded as a child widget in the right panel of the main window.
  */
 TriangleMeshViewer::TriangleMeshViewer(QWidget* parent,const ParametersRender* param,const std::vector<const TriangleMesh*>& mesh,bool verbose)
-  :QWidget(parent,Qt::Window)
+  :QWidget(parent)
   ,_verbose(verbose)
   ,parameters(param)
   ,camera_position(0.0f,-3.0f,0.0f)
@@ -49,11 +48,7 @@ TriangleMeshViewer::TriangleMeshViewer(QWidget* parent,const ParametersRender* p
   grid->setRowStretch(0,1);
   grid->setColumnStretch(0,1);
 
-  //! \todo Is there any good reason not to enable multisampling by default ?
-  QGLFormat gl_format;
-  gl_format.setSampleBuffers(true);
-
-  display=new TriangleMeshViewerDisplay(this,gl_format,param,mesh,_verbose);
+  display=new TriangleMeshViewerDisplay(this,param,mesh,_verbose);
   grid->addWidget(display,0,0);
 
   tilt_box=new QGroupBox("Tilt");
@@ -118,7 +113,7 @@ TriangleMeshViewer::TriangleMeshViewer(QWidget* parent,const ParametersRender* p
 	  this,SLOT(reset())
 	  );
 
-  clock.reset(new QTime());
+  clock.reset(new QElapsedTimer());
   clock->start();
   last_t=0;
 
@@ -178,7 +173,7 @@ void TriangleMeshViewer::mousePressEvent(QMouseEvent* e)
     {
       if (e->button()==Qt::LeftButton) keypressed_mouse_left=true;
       else if (e->button()==Qt::RightButton) keypressed_mouse_right=true;
-      else if (e->button()==Qt::MidButton) camera_velocity=0.0f;
+      else if (e->button()==Qt::MiddleButton) camera_velocity=0.0f;
       else e->ignore();
     }
   else
@@ -205,7 +200,7 @@ void TriangleMeshViewer::wheelEvent(QWheelEvent* e)
 {
   if (fly_mode)
     {
-      camera_velocity+=e->delta()*(0.03125f/480.0f);
+      camera_velocity+=e->angleDelta().y()*(0.03125f/480.0f);
     }
   else
     {
@@ -222,8 +217,14 @@ void TriangleMeshViewer::mouseMoveEvent(QMouseEvent* e)
 {
   if (fly_mode)
     {
-      camera_yaw_rate=4.0f*signedsquare(e->pos().x()/static_cast<float>(size().width())-0.5f);
-      camera_pitch_rate=(parameters->joystick_mouse ? 1.0f : -1.0f)*4.0f*signedsquare(e->pos().y()/static_cast<float>(size().height())-0.5f);
+      // Delta-based steering works on both X11 and Wayland.
+      // (QCursor::setPos is a no-op on Wayland, so absolute-centre recentering is not viable.)
+      const QPoint delta=e->pos()-last_mouse_pos;
+      last_mouse_pos=e->pos();
+
+      camera_yaw_rate  = 4.0f*signedsquare(delta.x()/static_cast<float>(size().width()));
+      camera_pitch_rate= (parameters->joystick_mouse ? 1.0f : -1.0f)
+                        *4.0f*signedsquare(delta.y()/static_cast<float>(size().height()));
     }
   else
     {
@@ -246,7 +247,9 @@ void TriangleMeshViewer::fly()
   spinrate_box->hide();
   button_box->hide();
   setFocus();
-  QCursor::setPos(mapToGlobal(QPoint(width()/2,height()/2)));
+  // Initialise delta tracking from the current cursor centre.
+  // QCursor::setPos is a no-op on Wayland, so we use delta-based steering instead.
+  last_mouse_pos=QPoint(width()/2,height()/2);
 }
 
 void TriangleMeshViewer::unfly()
@@ -275,9 +278,9 @@ void TriangleMeshViewer::reset()
 
 void TriangleMeshViewer::tick()
 {
-  const int t=clock->elapsed();
+  const qint64 t=clock->elapsed();
   const float dt=0.001f*(t-last_t);
-  last_t=t;
+  last_t=static_cast<int>(t);
 
   camera_roll_rate=0.0f;
   if (keypressed_arrow_left || keypressed_mouse_left) camera_roll_rate+=0.5f;

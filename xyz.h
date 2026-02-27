@@ -50,6 +50,9 @@ class XYZ
   XYZ(const XYZ& v)
     :x(v.x),y(v.y),z(v.z){}
 
+  //! Copy assignment operator.
+  XYZ& operator=(const XYZ&) = default;
+
   //! Initialise from separate components.
   XYZ(float vx,float vy,float vz)
     :x(vx),y(vy),z(vz){}

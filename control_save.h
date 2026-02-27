@@ -45,10 +45,7 @@ class ControlSave : public Control
 
  public slots:
 
-  void setAtmosphere(int v);
-  void setSeaSphere(int v);
-  void setPerVertexAlpha(int v);
-  void setTextureShaded(int v);
+  void setTextureShaded(Qt::CheckState v);
   void setTextureHeight(int v);
  
  private:

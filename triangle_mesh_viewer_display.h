@@ -26,16 +26,34 @@
 
 #include <deque>
 
+#include <QElapsedTimer>
+#include <QMatrix4x4>
+#include <QOpenGLBuffer>
+#include <QOpenGLFunctions>
+#include <QOpenGLShaderProgram>
+#include <QOpenGLVertexArrayObject>
+#include <QOpenGLWidget>
+
 #include "common.h"
 #include "parameters_render.h"
-#include "qtcommon.h"
 #include "random.h"
 #include "triangle_mesh.h"
 
 class TriangleMeshViewer;
 
+//! Per-mesh GPU resources (VBO + IBO + VAO).
+struct MeshGPU
+{
+  QOpenGLVertexArrayObject vao;
+  QOpenGLBuffer            vbo{QOpenGLBuffer::VertexBuffer};
+  QOpenGLBuffer            ibo{QOpenGLBuffer::IndexBuffer};
+  uint  triangles_colour0{0};  ///< triangles rendered with colour set 0
+  uint  triangles_total  {0};  ///< total triangle count
+  float emissive         {0};  ///< mesh emissive factor (0 = none)
+};
+
 //! Contains the actual rendering functionality of a TriangleMeshViewer.
-class TriangleMeshViewerDisplay : public QGLWidget
+class TriangleMeshViewerDisplay : public QOpenGLWidget, protected QOpenGLFunctions
 {
  private:
 
@@ -44,8 +62,10 @@ class TriangleMeshViewerDisplay : public QGLWidget
  public:
 
   //! Constructor.
-  TriangleMeshViewerDisplay(TriangleMeshViewer* parent,const QGLFormat& format,const ParametersRender* param,const std::vector<const TriangleMesh*>& m,bool verbose
-);
+  TriangleMeshViewerDisplay(TriangleMeshViewer* parent,
+                            const ParametersRender* param,
+                            const std::vector<const TriangleMesh*>& m,
+                            bool verbose);
 
   //! Destructor
   ~TriangleMeshViewerDisplay();
@@ -56,24 +76,24 @@ class TriangleMeshViewerDisplay : public QGLWidget
   //! Guideline size
   QSize sizeHint() const;
 
-  //! Set the mesh being rendered.
+  //! Set the mesh being rendered (rebuilds GPU buffers).
   void set_mesh(const std::vector<const TriangleMesh*>& m);
 
  protected:
 
   //! Called to repaint GL area.
-  void paintGL();
+  void paintGL() override;
 
-  //! Set up OpenGL.
-  void initializeGL();
+  //! Set up OpenGL (compile shaders, create initial state).
+  void initializeGL() override;
 
   //! Deal with resize.
-  void resizeGL(int w,int h);
-  
+  void resizeGL(int w, int h) override;
+
  public slots:
-  
+
   //! Called to redisplay scene
-  void draw_frame(const XYZ& p,const XYZ& l,const XYZ& u,float r,float t);
+  void draw_frame(const XYZ& p, const XYZ& l, const XYZ& u, float r, float t);
 
  private:
 
@@ -83,34 +103,30 @@ class TriangleMeshViewerDisplay : public QGLWidget
   //! Control logging
   const bool _verbose;
 
-  //! The meshes being displayed.
-  /*! NB NOT owned here
-   */
+  //! The meshes being displayed (NOT owned here).
   std::vector<const TriangleMesh*> mesh;
+
+  //! Per-mesh GPU resources (owned here).
+  std::vector<std::unique_ptr<MeshGPU>> mesh_gpu;
 
   //! Pointer to the rendering parameters.
   const ParametersRender* parameters;
 
-  //! GL display list index
-  /*! Zero is not a valid value according to red book, so use zero to designate unset */
-  uint gl_display_list_index;
-
-  
+  //! GLSL shader program.
+  QOpenGLShaderProgram shader;
 
   //! Frame count.
   uint frame_number;
-  
-  //! Display area width.
-  uint width;
 
-  //! Display area height.
-  uint height;
+  //! Display area width/height (in pixels).
+  uint _width;
+  uint _height;
 
   //! Time frames for FPS measurement.
-  QTime frame_time;
-  
+  QElapsedTimer frame_time;
+
   //! Time since FPS last reported.
-  QTime frame_time_reported;
+  QElapsedTimer frame_time_reported;
 
   //! Queue of frame times to average.
   std::deque<uint> frame_times;
@@ -128,10 +144,17 @@ class TriangleMeshViewerDisplay : public QGLWidget
   float object_rotation;
   //@}
 
-  void check_for_gl_errors(const char*) const;
-  
-  //! Compute background colour from render parameters and camera height
-  const FloatRGBA background_colour() const;
+  //! Compute background colour from render parameters and camera height.
+  FloatRGBA background_colour() const;
+
+  //! Build/rebuild GPU buffers for all current meshes.
+  void build_gpu_buffers();
+
+  //! Release all GPU buffers.
+  void destroy_gpu_buffers();
+
+  //! Log any pending GL errors.
+  void check_for_gl_errors(const char*);
 };
 
 #endif

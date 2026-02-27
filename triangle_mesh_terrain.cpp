@@ -652,28 +652,21 @@ TriangleMeshTerrainPlanet::TriangleMeshTerrainPlanet(const ParametersTerrain& pa
   do_terrain(parameters);
 }
 
-void TriangleMeshTerrainPlanet::write_povray(std::ofstream& out,const ParametersSave& param_save,const ParametersTerrain& parameters_terrain) const
+void TriangleMeshTerrainPlanet::write_povray(std::ofstream& out,const ParametersSave& /*param_save*/,const ParametersTerrain& parameters_terrain) const
 {
-  if (param_save.pov_sea_object)
-    {
-      out 
-	<< "sphere {<0.0,0.0,0.0>,1.0 pigment{rgb "
-	<< parameters_terrain.colour_ocean.format_pov_rgb()
-	<< "} finish {ambient " 
-	<< emissive() 
-	<< " diffuse " 
-	<< 1.0f-emissive() 
-	<< "}}\n";
-    }
-  
-  if (param_save.pov_atmosphere)
-    {
-      out
-	<< "sphere {<0.0,0.0,0.0>,1.025 hollow texture {pigment {color rgbf 1}} interior{media{scattering{1,color rgb <1.0,1.0,1.0> extinction 1}}}}\n"
-	<< "sphere {<0.0,0.0,0.0>,1.05  hollow texture {pigment {color rgbf 1}} interior{media{scattering{1,color rgb <0.0,0.0,1.0> extinction 1}}}}\n";
-    }
-  
-  TriangleMesh::write_povray(out,param_save.pov_sea_object,false,false); // Don't double illuminate.  Don't no-shadow.
+  // pov_sea_object hardcoded true (former default)
+  out 
+    << "sphere {<0.0,0.0,0.0>,1.0 pigment{rgb "
+    << parameters_terrain.colour_ocean.format_pov_rgb()
+    << "} finish {ambient " 
+    << emissive() 
+    << " diffuse " 
+    << 1.0f-emissive() 
+    << "}}\n";
+
+  // pov_atmosphere hardcoded false (former default) — nothing emitted
+
+  TriangleMesh::write_povray(out,true,false,false); // Don't double illuminate.  Don't no-shadow.
 }
 
 TriangleMeshTerrainFlat::TriangleMeshTerrainFlat(const ParametersTerrain& parameters,Progress* progress)
@@ -686,26 +679,19 @@ TriangleMeshTerrainFlat::TriangleMeshTerrainFlat(const ParametersTerrain& parame
   do_terrain(parameters);
 }
 
-void TriangleMeshTerrainFlat::write_povray(std::ofstream& out,const ParametersSave& param_save,const ParametersTerrain& parameters_terrain) const
+void TriangleMeshTerrainFlat::write_povray(std::ofstream& out,const ParametersSave& /*param_save*/,const ParametersTerrain& parameters_terrain) const
 {
-  if (param_save.pov_sea_object)
-    {
-      out
-	<< "plane {<0.0,1.0,0.0>,0.0 pigment{rgb "
-	<< parameters_terrain.colour_ocean.format_pov_rgb()
-	<< "} finish {ambient " 
-	<< emissive() 
-	<< " diffuse " 
-	<< 1.0f-emissive() 
-	<< "}}\n";
-    }
-  
-  if (param_save.pov_atmosphere)
-    {
-      out
-	<< "plane {<0.0,1.0,0.0>,0.05 hollow texture {pigment {color rgbf 1}} interior{media{scattering{1,color rgb <1.0,1.0,1.0> extinction 1}}}}\n"
-	<< "plane {<0.0,1.0,0.0>,0.1  hollow texture {pigment {color rgbf 1}} interior{media{scattering{1,color rgb <0.0,0.0,1.0> extinction 1}}}}\n";
-    }
-  
-  TriangleMesh::write_povray(out,param_save.pov_sea_object,false,false); // Don't double illuminate.  Don't no-shadow.
+  // pov_sea_object hardcoded true (former default)
+  out
+    << "plane {<0.0,1.0,0.0>,0.0 pigment{rgb "
+    << parameters_terrain.colour_ocean.format_pov_rgb()
+    << "} finish {ambient " 
+    << emissive() 
+    << " diffuse " 
+    << 1.0f-emissive() 
+    << "}}\n";
+
+  // pov_atmosphere hardcoded false (former default) — nothing emitted
+
+  TriangleMesh::write_povray(out,true,false,false); // Don't double illuminate.  Don't no-shadow.
 }
