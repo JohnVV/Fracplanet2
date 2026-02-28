@@ -48,7 +48,7 @@ ControlSave::ControlSave(FracplanetMain* save_target,ParametersSave* param)
   grid_layout->addWidget(texture_height_spinbox,0,1);
   texture_height_spinbox->setMinimum(1);
   texture_height_spinbox->setMaximum(0x7fffffff);
-  texture_height_spinbox->setValue(1024);
+  texture_height_spinbox->setValue(2048);
   texture_height_spinbox->setToolTip("Texture height in pixels; the texture width is the same as the height\nexcept for spherical geometry (planets) when it is double.");
   connect(
 	  texture_height_spinbox,SIGNAL(valueChanged(int)),
