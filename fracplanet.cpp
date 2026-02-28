@@ -19,7 +19,7 @@
 
 /*! \mainpage Fracplanet : fractal terrain generator
 
-  \author Tim Day 
+  \author Tim Day -- updated to qt6/Wayland by John Van Vliet
 
   \section introduction Introduction
   "Fracplanet" is an interactive tool for generating fractal planets and terrains.
