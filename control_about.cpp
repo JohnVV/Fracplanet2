@@ -32,7 +32,7 @@ ControlAbout::ControlAbout(QApplication* app)
   label0_font.setBold(true);
   label0->setFont(label0_font);
 
-  QLabel*const label1=new QLabel("by timday@timday.com\nhttp://fracplanet.sourceforge.net");
+  QLabel*const label1=new QLabel("by timday@timday.com\nhttp://fracplanet.sourceforge.net - updated by John Van Vliet");
   layout()->addWidget(label1);
   label1->setAlignment(Qt::AlignHCenter|label0->alignment());
   QFont label1_font(QApplication::font());
