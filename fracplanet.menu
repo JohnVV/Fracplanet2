@@ -1,1 +1,0 @@
-?package(fracplanet): needs="x11" section="Applications/Graphics" title="Fracplanet" command="/usr/bin/fracplanet" longtitle="Fractal terrain generator"
